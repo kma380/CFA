@@ -1,0 +1,175 @@
+# Analysis of Dataset:
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pywaffle import Waffle
+
+import functions as f
+
+df_ratings = pd.read_csv('data/ratings_explicit.csv')
+df_books = pd.read_csv('data/books.csv')
+df_users = pd.read_csv('data/users.csv')
+df_ratings_implicit = pd.read_csv('data/ratings_implicit.csv')
+
+dist_user = f.df_dist(df_ratings, 'user_id')
+dist_book = f.df_dist(df_ratings, 'isbn')
+
+print('Number of ratings: %d\nNumber of books: %d\nNumber of users: %d' % (len(df_ratings),
+                                                                           len(df_ratings['isbn'].unique()),
+                                                                           len(df_ratings['user_id'].unique())))
+
+print('Average number of ratings per book: %.2f\nAverage number of ratings per user: %.2f' % (dist_user['count'].mean(),
+                                                                                              dist_book['count'].mean()))
+
+# Distribution of number of rating per book and per user:
+
+f.draw_distribution(dist_book, 'book')
+f.draw_distribution(dist_user, 'user')
+
+# distribution of book ratings:
+
+palette = sns.color_palette("RdBu", 10)
+
+fig, ax = plt.subplots(figsize=(10, 6))
+sns.countplot(x='book_rating', data=df_ratings, palette=palette)
+ax.set_title('Distribution of book ratings')
+
+plt.show()
+
+# Book ratings by year of publication:
+
+df_ratings_b = df_ratings.merge(df_books, on='isbn', how='left')
+
+df_books_year = f.books_groupby(df_ratings_b, 'year_of_publication', 'year')
+df_books_year = df_books_year[df_books_year['year'].between(1950,2004)]
+df_books_year['year'] = df_books_year['year'].astype(int)
+
+palette = sns.color_palette("RdBu", len(df_books_year['year'].unique()))
+
+gridsize = (3, 1)
+fig = plt.figure(figsize=(12, 8))
+ax1 = plt.subplot2grid(gridsize, (0, 0), colspan=1, rowspan=1)
+ax2 = plt.subplot2grid(gridsize, (1, 0), colspan=1, rowspan=2)
+
+sns.lineplot(x='year', y='avg_rating', data=df_books_year, palette=palette, ax=ax1)
+ax1.set_title('Average rating by year of publication')
+ax1.set_ylim([0,10])
+
+sns.barplot(x='year', y='count', data=df_books_year, palette=palette, ax=ax2)
+ax2.set_title('Number of book ratings by year of publication')
+
+plt.xticks(rotation=90)
+plt.tight_layout()
+plt.show()
+
+# Top Books and Authors:
+
+df_books_title = f.books_groupby(df_ratings_b, 'book_title', 'title')
+df_books_title['title_short'] = df_books_title['title'].apply(f.short_title)
+
+titles_top_popular = df_books_title.sort_values('count', ascending=False).head(20)
+f.draw_top_chart(titles_top_popular, 'title_short', ['avg_rating', 'count'], 'Average rating and number of ratings of the most popular books')
+
+titles_top_rated = df_books_title.sort_values('avg_rating', ascending=False)
+titles_top_rated = titles_top_rated[titles_top_rated['count']>=50].head(20)
+
+f.draw_top_chart(titles_top_rated, 'title_short', ['count', 'avg_rating'], 'Average rating and number of ratings of top rated books')
+
+df_books_author = f.books_groupby(df_ratings_b, 'book_author', 'author')
+
+authors_top_popular = df_books_author.sort_values('count', ascending=False).head(20)
+f.draw_top_chart(authors_top_popular, 'author', ['avg_rating', 'count'], 'Average rating and number of ratings of the most popular authors')
+
+authors_top_rated = df_books_author.sort_values('avg_rating', ascending=False)
+authors_top_rated = authors_top_rated[authors_top_rated['count']>=500].head(20)
+
+f.draw_top_chart(authors_top_rated, 'author', ['count', 'avg_rating'], 'Average rating and number of ratings of top rated authors')
+
+# Comparison of Explicit and Implicit Ratings:
+
+dist_book_impl = f.df_dist(df_ratings_implicit, 'isbn')
+dist_book_expl = df_ratings.groupby('isbn').agg({'book_rating': ['count','mean']}).reset_index()
+dist_book_expl.columns = ['isbn', 'count', 'avg_rating']
+
+ratings_comparison = dist_book_expl.merge(dist_book_impl, on='isbn', how='left', suffixes=['_expl', '_impl'])
+ratings_comparison = ratings_comparison[(ratings_comparison['count_expl']>5)&(ratings_comparison['count_impl']>5)]
+
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(14, 4))
+
+sns.scatterplot(x='count_expl', y='count_impl', data=ratings_comparison, color='#2f6194', ax=ax1)
+ax1.set_title('Number of explicit vs implicit ratings')
+
+sns.scatterplot(x='avg_rating', y='count_impl', data=ratings_comparison, color='#2f6194', ax=ax2)
+ax2.set_title('Average rating (explicit) vs number of implicit ratings')
+
+plt.show()
+
+print('Correlation between number of explicit and implicit ratings: %.2f' % ratings_comparison[['count_expl', 'count_impl']].corr().iloc[0][1])
+
+# Distribution of age of book crossing users:
+
+df_ratings_u = df_ratings.merge(df_users, on='user_id', how='left')
+df_ratings_u['age_round'] = df_ratings_u['age'].round(-1)
+
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(14, 4))
+
+sns.distplot(df_users[(df_users['age'].notna())&(df_users['age']<=100)]['age'], color='#2f6194', ax=ax1)
+ax1.set_title('Distribution of age of Book-Crossing users')
+
+sns.distplot(df_ratings_u[(df_ratings_u['age'].notna())&(df_ratings_u['age']<=100)]['age'], color='#2f6194', ax=ax2)
+ax2.set_title('Distribution of number of ratings by age')
+
+plt.show()
+
+# Distribution of books ratings by country:
+
+df_users_country = df_ratings_u['country'].value_counts(normalize=True).reset_index()
+df_users_country.columns = ['country', 'share']
+df_users_country.loc[df_users_country['share']<0.01] = 'Other', df_users_country[df_users_country['share']<0.01]['share'].sum()
+df_users_country.drop_duplicates(inplace=True)
+
+waffle_data = df_users_country.set_index('country').T.to_dict('records')[0]
+
+fig = plt.figure(
+        FigureClass = Waffle,
+        figsize = (18,4),
+        rows = 5,
+        columns = 15,
+        values = waffle_data,
+        labels = ["%s (%.2f%%)" % (k, v*100) for k, v in waffle_data.items()],
+        legend = {
+            'loc': 'upper left',
+            'bbox_to_anchor': (1, 1)
+        },
+        colors = sns.color_palette("RdBu_r", len(waffle_data)).as_hex(),
+        icons = 'user',
+        font_size = 30,
+        title = {
+            'label': 'Share of book ratings by country',
+            'loc': 'left',
+            'fontdict': {
+                'fontsize': 14
+            }
+        }
+)
+
+plt.show()
+
+user_threshold = 3
+book_threshold = 0.05
+
+user_list = dist_user[dist_user['count']>=user_threshold]['user_id'].unique()
+df_top = df[df['user_id'].isin(user_list)]
+print('number of users with more than %d ratings: %d' % (user_threshold, len(user_list)))
+print('number of ratings', len(df_top))
+
+dist_book2 = df_dist(df_top, 'isbn', norm=True)
+book_list = dist_book2.head(int(book_threshold * len(dist_book2)))['isbn'].unique()
+df_top = df_top[df_top['isbn'].isin(book_list)]
+
+print('\nnumber of top %d%% most popular books: %d' % (book_threshold*100, len(book_list)))
+print('number of ratings', len(df_top))
+
+df_top.to_csv('data/ratings_top.csv', encoding='utf-8', index=False)
