@@ -1,0 +1,105 @@
+# Colaborative Filtering Recommender:
+
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+from surprise import Dataset, Reader
+from surprise import SVD, NMF
+from surprise.model_selection import cross_validate, train_test_split, GridSearchCV
+
+import functions as f
+
+df = pd.read_csv('data/ratings_top.csv')
+
+reader = Reader(rating_scale=(1, 10))
+data = Dataset.load_from_df(df[['user_id', 'isbn', 'book_rating']], reader)
+
+print('Number of ratings: %d\nNumber of books: %d\nNumber of users: %d' % (len(df), len(df['isbn'].unique()), len(df['user_id'].unique())))
+
+# SVD and NMF model comparison:
+
+model_svd = SVD()
+cv_results_svd = cross_validate(model_svd, data, cv=3)
+pd.DataFrame(cv_results_svd).mean()
+
+model_nmf = NMF()
+cv_results_nmf = cross_validate(model_nmf, data, cv=3)
+pd.DataFrame(cv_results_nmf).mean()
+
+# Optimization of SVD algorithm:
+
+param_grid = {'n_factors': [80,100,120],
+              'n_epochs': [5, 10, 20],
+              'lr_all': [0.002, 0.005],
+              'reg_all': [0.2, 0.4, 0.6]}
+
+gs = GridSearchCV(SVD, param_grid, measures=['rmse', 'mae'], cv=3)
+gs.fit(data)
+
+print(gs.best_score['rmse'])
+print(gs.best_params['rmse'])
+
+# Analysis of Collaborative Filtering model results:
+
+trainset, testset = train_test_split(data, test_size=0.2)
+
+model = SVD(n_factors=80, n_epochs=20, lr_all=0.005, reg_all=0.2)
+model.fit(trainset)
+predictions = model.test(testset)
+
+df_pred = pd.DataFrame(predictions, columns=['user_id', 'isbn', 'actual_rating', 'pred_rating', 'details'])
+
+df_pred['impossible'] = df_pred['details'].apply(lambda x: x['was_impossible'])
+df_pred['pred_rating_round'] = df_pred['pred_rating'].round()
+df_pred['abs_err'] = abs(df_pred['pred_rating'] - df_pred['actual_rating'])
+df_pred.drop(['details'], axis=1, inplace=True)
+
+df_pred.sample(5)
+
+# Distribution of actual and predicted ratings in the test set:
+
+palette = sns.color_palette("RdBu", 10)
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(14, 4))
+
+sns.countplot(x='actual_rating', data=df_pred, palette=palette, ax=ax1)
+ax1.set_title('Distribution of actual ratings of books in the test set')
+
+sns.countplot(x='pred_rating_round', data=df_pred, palette=palette, ax=ax2)
+ax2.set_title('Distribution of predicted ratings of books in the test set')
+
+plt.show()
+
+# Absolute error of predicted ratings:
+
+df_pred_err = df_pred.groupby('actual_rating')['abs_err'].mean().reset_index()
+
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(14, 4))
+
+sns.distplot(df_pred['abs_err'], color='#2f6194', ax=ax1)
+ax1.set_title('Distribution of absolute error in test set')
+
+sns.barplot(x='actual_rating', y='abs_err', data=df_pred_err, palette=palette, ax=ax2)
+ax2.set_title('Mean absolute error for rating in test set')
+
+plt.show()
+
+# Analysis of predicted ratings of a particular user:
+
+df_books = pd.read_csv('data/books.csv')
+
+df_ext = df.merge(df_books[['isbn', 'book_title']], on='isbn', how='left')
+df_ext['book_title_short'] = df_ext['book_title'].apply(f.short_title)
+df_ext = df_ext.merge(df_pred[['isbn', 'user_id', 'pred_rating']], on=['isbn', 'user_id'], how='left')
+
+selected_user_id = 193458
+df_user = df_ext[df_ext['user_id']==selected_user_id]
+
+df_user[(df_user['pred_rating'].isna())&(df_user['book_rating']>=9)].sample(10)
+
+df_user[df_user['pred_rating'].notna()].sort_values('pred_rating', ascending=False).head(5)
+
+# Test set: predicted top rated books:
+
+df_user[df_user['pred_rating'].notna()].sort_values('book_rating', ascending=False).head(5)
