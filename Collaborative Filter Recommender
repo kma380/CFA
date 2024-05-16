@@ -1,0 +1,150 @@
+# Collaborative Filter Recommender:
+
+import pandas as pd
+import numpy as np
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+from surprise import Dataset, Reader
+from surprise import KNNBasic, KNNWithMeans, KNNWithZScore, KNNBaseline
+from surprise.model_selection import cross_validate, train_test_split, GridSearchCV
+
+import functions as f
+
+df = pd.read_csv('data/ratings_top.csv')
+
+reader = Reader(rating_scale=(1, 10))
+data = Dataset.load_from_df(df[['user_id', 'isbn', 'book_rating']], reader)
+
+print('Number of ratings: %d\nNumber of books: %d\nNumber of users: %d' % (len(df), len(df['isbn'].unique()), len(df['user_id'].unique())))
+
+# K-Nearest Neighbour Algorithm:
+
+models1 = f.generate_models_dict([KNNBasic, KNNWithMeans, KNNWithZScore, KNNBaseline], ['msd'], True)
+results1 = f.cv_multiple_models(data, models1)
+models1 = None
+display(results1)
+
+f.draw_model_results(results1)
+
+# User item model selection:
+
+models2 = f.generate_models_dict([KNNBaseline], ['cosine', 'msd', 'pearson'], True)
+results2 = f.cv_multiple_models(data, models2)
+models2 = None
+display(results2)
+
+# Item Item Model Selection:
+
+models3 = f.generate_models_dict([KNNBaseline], ['cosine', 'msd', 'pearson'], False)
+results3 = f.cv_multiple_models(data, models3)
+models3 = None
+display(results3)
+
+
+
+results2['model'] = 'USER ' + results2['model']
+results3['model'] = 'ITEM ' + results3['model']
+
+f.draw_model_results(pd.concat([results2, results3]))
+
+# Memory Based Model Optimisation with GridSearch CV:
+
+param_grid = {'k': [40,45,50],
+              'min_k': [1,3,5],
+              'sim_options': {'name': ['pearson'],
+                              'min_support': [1, 5],
+                              'user_based': [False]}
+              }
+gs = GridSearchCV(KNNBaseline, param_grid, measures=['rmse', 'mae'], cv=3)
+
+gs.fit(data)
+print(gs.best_score['rmse'])
+print(gs.best_params['rmse'])
+
+#1.607153664460527
+#{'k': 50, 'min_k': 5, 'sim_options': {'name': 'pearson', 'min_support': 1, 'user_based': False}}
+
+# Analysis of Collaborative Filtering model results:
+
+trainset, testset = train_test_split(data, test_size=0.2)
+
+sim_options = {
+    'name': 'pearson',
+    'user_based': False,
+    'min_support': 1
+}
+
+model = KNNWithMeans(k=50, min_k=5, sim_options=sim_options)
+model.fit(trainset)
+predictions = model.test(testset)
+
+df_pred = pd.DataFrame(predictions, columns=['user_id', 'isbn', 'actual_rating', 'pred_rating', 'details'])
+
+df_pred['k'] = df_pred['details'].apply(f.k_from_details)
+df_pred['impossible'] = df_pred['details'].apply(lambda x: x['was_impossible'])
+df_pred['pred_rating_round'] = df_pred['pred_rating'].round()
+df_pred['abs_err'] = abs(df_pred['pred_rating'] - df_pred['actual_rating'])
+df_pred.drop(['details'], axis=1, inplace=True)
+
+df_pred.sample(5)
+
+# Distribution of actual and predicted ratings in the test set:
+
+palette = sns.color_palette("RdBu", 10)
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(14, 4))
+
+sns.countplot(x='actual_rating', data=df_pred, palette=palette, ax=ax1)
+ax1.set_title('Distribution of actual ratings of books in the test set')
+
+sns.countplot(x='pred_rating_round', data=df_pred, palette=palette, ax=ax2)
+ax2.set_title('Distribution of predicted ratings of books in the test set')
+
+plt.show()
+
+# Absolute error of predicted ratings:
+
+df_pred_err = df_pred.groupby('actual_rating')['abs_err'].mean().reset_index()
+
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(14, 4))
+
+sns.distplot(df_pred['abs_err'], color='#2f6194', ax=ax1)
+ax1.set_title('Distribution of absolute error in test set')
+
+sns.barplot(x='actual_rating', y='abs_err', data=df_pred_err, palette=palette, ax=ax2)
+ax2.set_title('Mean absolute error for rating in test set')
+
+plt.show()
+
+# Analysis of predicted ratings of a particular user:
+
+df_books = pd.read_csv('data/books.csv')
+
+df_pred_ext = df_pred.merge(df_books[['isbn', 'book_title']], on='isbn', how='left')
+df_pred_ext['book_title_short'] = df_pred_ext['book_title'].apply(f.short_title)
+
+# Selected user: 204864
+selected_user_id = 204864
+
+df_pred_user = df_pred_ext[df_pred_ext['user_id']==selected_user_id]
+
+fig, (ax1, ax2) = plt.subplots(nrows=1, ncols=2, figsize=(14, 4))
+
+sns.countplot(x='actual_rating', data=df_pred_user, palette=sns.color_palette("RdBu", len(df_pred_user['actual_rating'].unique())), ax=ax1)
+ax1.set_title('Distribution of actual book ratings of a selected user')
+
+sns.countplot(x='pred_rating_round', data=df_pred_user, palette=sns.color_palette("RdBu", len(df_pred_user['pred_rating_round'].unique())), ax=ax2)
+ax2.set_title('Distribution of predicted book ratings of a selected user')
+
+plt.show()
+
+df_pred_sample = df_pred_user[df_pred_user['pred_rating_round'].notna()].sample(10)
+df_pred_sample = pd.melt(df_pred_sample[['book_title_short', 'actual_rating', 'pred_rating_round']], id_vars='book_title_short', var_name='prediction', value_name='rating')
+
+fig, ax = plt.subplots(figsize=(14, 6))
+
+sns.barplot(x='book_title_short', y='rating', hue='prediction', data=df_pred_sample, palette=sns.color_palette("Paired"))
+ax.set_title('Actual and estimated ratings of books')
+plt.xticks(rotation=90)
+
+plt.show()
